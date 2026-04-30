@@ -15,9 +15,27 @@ sources:
       url: "https://api.github.com/repos/MoonshotAI/Kimi-VL/releases"
     - name: "智谱AI"
       url: "https://api.github.com/repos/THUDM/ChatGLM3/releases"
+    # === 通用AI基础设施 ===
+    - name: "LangChain"
+      url: "https://api.github.com/repos/langchain-ai/langchain/releases"
+    - name: "Ollama"
+      url: "https://api.github.com/repos/ollama/ollama/releases"
+    - name: "vLLM"
+      url: "https://api.github.com/repos/vllm-project/vllm/releases"
+    - name: "Dify"
+      url: "https://api.github.com/repos/langgenius/dify/releases"
+    # === 国产/内网友好项目 ===
+    - name: "FastGPT"
+      url: "https://api.github.com/repos/labring/FastGPT/releases"
+    - name: "RAGFlow"
+      url: "https://api.github.com/repos/infiniflow/ragflow/releases"
+    - name: "MaxKB"
+      url: "https://api.github.com/repos/1Panel-dev/MaxKB/releases"
+    - name: "QAnything"
+      url: "https://api.github.com/netease-youdao/QAnything/releases"
 
 keywords:
-  运维场景:
+  ops:
     - "AIOps"
     - "日志分析"
     - "日志异常"
@@ -45,7 +63,13 @@ keywords:
     - "推理加速"
     - "模型量化"
     - "KV Cache"
-  办公场景:
+    - "Ollama"
+    - "Dify"
+    - "RAGFlow"
+    - "FastGPT"
+    - "MaxKB"
+    - "QAnything"
+  office:
     - "智能文档"
     - "公文写作"
     - "合同审查"
@@ -69,7 +93,10 @@ keywords:
     - "AI助理"
     - "Copilot"
     - "数字人"
-  通用:
+    - "LangChain"
+    - "Agent"
+    - "多Agent"
+  general:
     - "通义千问"
     - "Qwen"
     - "DeepSeek"
@@ -77,8 +104,6 @@ keywords:
     - "智谱"
     - "ChatGLM"
     - "RAG"
-    - "Agent"
-    - "多Agent"
     - "幻觉"
     - "幻觉治理"
     - "提示词注入"
@@ -86,11 +111,13 @@ keywords:
     - "对齐"
     - "开源模型"
     - "HuggingFace"
+    - "小米"
+    - "MiMo"
 
 filter:
   min_score: 3
   max_articles_per_day: 15
-  model: "moonshot-v1-8k"
+  model: "kimi-for-coding"
 
 output:
   github_pages: true
