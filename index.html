@@ -49,12 +49,14 @@
     padding-left: 0.75rem; border-left: 4px solid var(--border-blue);
   }
   .section-title.normal { border-left-color: var(--border-gray); }
+  .section-title.release { border-left-color: #20c997; }
   .article {
     background: var(--card-bg); border-radius: 0.5rem; padding: 1.25rem;
     margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08);
     border-left: 4px solid var(--border-blue);
   }
   .article.normal { border-left-color: var(--border-gray); }
+  .article.release { border-left-color: #20c997; }
   .article-header {
     display: flex; flex-wrap: wrap; align-items: baseline;
     gap: 0.5rem; margin-bottom: 0.5rem;
@@ -81,6 +83,12 @@
     font-size: 0.85rem; color: #664d03;
   }
   .talk strong { display: block; margin-bottom: 0.2rem; color: #856404; }
+  .release-type {
+    font-size: 0.8rem; font-weight: 600; padding: 0.15rem 0.5rem;
+    border-radius: 0.25rem; margin-right: 0.3rem;
+  }
+  .release-type.release-security { background: #f8d7da; color: #721c24; }
+  .release-type.release-normal { background: #d1ecf1; color: #0c5460; }
   footer {
     text-align: center; color: var(--text-secondary); font-size: 0.8rem;
     padding: 2rem 1rem; border-top: 1px solid #dee2e6; margin-top: 2rem;
@@ -100,12 +108,129 @@
     <p class="subtitle">运维 + 办公双场景技术资讯过滤</p>
   </header>
   <div class="stats">
-    <div class="stat-item"><div class="number">0</div><div class="label">共筛选</div></div>
+    <div class="stat-item"><div class="number">11</div><div class="label">共筛选</div></div>
     <div class="stat-item"><div class="number">0</div><div class="label">高价值</div></div>
+    <div class="stat-item"><div class="number">2</div><div class="label">RSS资讯</div></div>
+    <div class="stat-item"><div class="number">9</div><div class="label">工具更新</div></div>
   </div>
-  <div class="section" style="text-align:center;color:var(--text-secondary);padding:3rem 1rem;">今日无符合条件的资讯</div>
+  <div class="section">
+    <div class="section-title normal">📌 值得关注（2分）</div>
+    <div class="article normal">
+      <div class="article-header">
+        <span class="score">[2分]</span>
+        <a href="https://www.qbitai.com/2026/04/411133.html" target="_blank" class="article-title">火速吃瓜：Kimi K2.6设计能力超越Claude Design</a>
+      </div>
+      <div class="meta">来源：量子位 | ID：1affcfbf1535369c6cc34cd1af87cdc8</div>
+      <div class="badges"><span class="badge">模型-国产</span><span class="badge">模型-开源</span></div>
+      <div class="summary">Kimi K2.6在开源多模态设计能力上更新迭代，属于国产大模型技术进展跟踪项。</div>
+    </div>
+
+    <div class="article normal">
+      <div class="article-header">
+        <span class="score">[2分]</span>
+        <a href="https://www.qbitai.com/2026/04/410937.html" target="_blank" class="article-title">不卷参数卷架构，这个开源模型把图像理解和生成统一了</a>
+      </div>
+      <div class="meta">来源：量子位 | ID：35cecc2313e56e0eb9a000b761658638</div>
+      <div class="badges"><span class="badge">模型-开源</span><span class="badge">工程-部署</span></div>
+      <div class="summary">Janus-Pro是DeepSeek开源的统一多模态模型，支持图像理解与生成，可在消费级显卡本地部署。</div>
+    </div>
+
+  </div>
+  <div class="section">
+    <div class="section-title release">🛠 开源基础设施更新</div>
+    <div class="article release">
+      <div class="article-header">
+        <span class="release-type release-security">🔴 安全/重要</span>
+        <a href="https://github.com/langchain-ai/langchain/releases/tag/langchain%3D%3D1.2.16" target="_blank" class="article-title">LangChain langchain==1.2.16</a>
+      </div>
+      <div class="meta">来源：GitHub-LangChain</div>
+      <div class="badges"><span class="badge">办公-RPA</span><span class="badge">Agent-运维</span></div>
+      <div class="summary">Changes since langchain==1.2.15</div>
+    </div>
+
+    <div class="article release">
+      <div class="article-header">
+        <span class="release-type release-security">🔴 安全/重要</span>
+        <a href="https://github.com/langchain-ai/langchain/releases/tag/langchain-tests%3D%3D1.1.7" target="_blank" class="article-title">LangChain langchain-tests==1.1.7</a>
+      </div>
+      <div class="meta">来源：GitHub-LangChain</div>
+      <div class="badges"><span class="badge">办公-RPA</span><span class="badge">Agent-运维</span></div>
+      <div class="summary">Changes since langchaintests==1.1.6</div>
+    </div>
+
+    <div class="article release">
+      <div class="article-header">
+        <span class="release-type release-security">🔴 安全/重要</span>
+        <a href="https://github.com/ollama/ollama/releases/tag/v0.22.1-rc1" target="_blank" class="article-title">Ollama v0.22.1-rc1</a>
+      </div>
+      <div class="meta">来源：GitHub-Ollama</div>
+      <div class="badges"><span class="badge">工程-部署</span><span class="badge">模型-开源</span></div>
+      <div class="summary">What's Changed</div>
+    </div>
+
+    <div class="article release">
+      <div class="article-header">
+        <span class="release-type release-normal">🔵 常规更新</span>
+        <a href="https://github.com/ollama/ollama/releases/tag/v0.22.0" target="_blank" class="article-title">Ollama v0.22.0</a>
+      </div>
+      <div class="meta">来源：GitHub-Ollama</div>
+      <div class="badges"><span class="badge">工程-部署</span><span class="badge">模型-开源</span></div>
+      <div class="summary">New models</div>
+    </div>
+
+    <div class="article release">
+      <div class="article-header">
+        <span class="release-type release-security">🔴 安全/重要</span>
+        <a href="https://github.com/vllm-project/vllm/releases/tag/v0.20.0" target="_blank" class="article-title">vLLM v0.20.0</a>
+      </div>
+      <div class="meta">来源：GitHub-vLLM</div>
+      <div class="badges"><span class="badge">工程-部署</span><span class="badge">算力-国产</span></div>
+      <div class="summary">vLLM v0.20.0</div>
+    </div>
+
+    <div class="article release">
+      <div class="article-header">
+        <span class="release-type release-security">🔴 安全/重要</span>
+        <a href="https://github.com/langgenius/dify/releases/tag/1.14.0" target="_blank" class="article-title">Dify 1.14.0</a>
+      </div>
+      <div class="meta">来源：GitHub-Dify</div>
+      <div class="badges"><span class="badge">办公-数字员工</span><span class="badge">Agent-运维</span></div>
+      <div class="summary">🚀 What's New in v1.14.0?</div>
+    </div>
+
+    <div class="article release">
+      <div class="article-header">
+        <span class="release-type release-normal">🔵 常规更新</span>
+        <a href="https://github.com/labring/FastGPT/releases/tag/v4.14.17" target="_blank" class="article-title">FastGPT v4.14.17</a>
+      </div>
+      <div class="meta">来源：GitHub-FastGPT</div>
+      <div class="badges"><span class="badge">RAG-运维知识库</span><span class="badge">办公-数字员工</span></div>
+      <div class="summary">升级指南</div>
+    </div>
+
+    <div class="article release">
+      <div class="article-header">
+        <span class="release-type release-normal">🔵 常规更新</span>
+        <a href="https://github.com/labring/FastGPT/releases/tag/v4.14.16" target="_blank" class="article-title">FastGPT v4.14.16</a>
+      </div>
+      <div class="meta">来源：GitHub-FastGPT</div>
+      <div class="badges"><span class="badge">RAG-运维知识库</span><span class="badge">办公-数字员工</span></div>
+      <div class="summary">升级指南</div>
+    </div>
+
+    <div class="article release">
+      <div class="article-header">
+        <span class="release-type release-security">🔴 安全/重要</span>
+        <a href="https://github.com/infiniflow/ragflow/releases/tag/v0.25.1" target="_blank" class="article-title">RAGFlow v0.25.1</a>
+      </div>
+      <div class="meta">来源：GitHub-RAGFlow</div>
+      <div class="badges"><span class="badge">RAG-运维知识库</span><span class="badge">工程-部署</span></div>
+      <div class="summary">Release v0.25.1 created from ce4c782fd73c78ad6cb2b831d76b6b0975416070 at 20260430 11:02:49+08:00</div>
+    </div>
+
+  </div>
   <footer>
-    <div>生成时间：2026-04-30 02:59:06</div>
+    <div>生成时间：2026-04-30 03:35:29</div>
     <div class="sources">信源：量子位 RSS / 机器之心 RSS / InfoQ AI前线 RSS / DeepSeek / 通义千问 / Kimi / 智谱AI GitHub Releases / LangChain / Ollama / vLLM / Dify GitHub Releases / FastGPT / RAGFlow / MaxKB / QAnything GitHub Releases</div>
   </footer>
 </div>
