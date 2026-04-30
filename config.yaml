@@ -115,9 +115,12 @@ keywords:
     - "MiMo"
 
 filter:
-  min_score: 3
-  max_articles_per_day: 15
+  min_score: 2
+  max_articles_per_day: 20
   model: "kimi-for-coding"
+  github_releases:
+    max_per_source: 2
+    auto_keep: true
 
 output:
   github_pages: true

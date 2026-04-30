@@ -48,7 +48,8 @@ def flatten_keywords(cfg_keywords: Dict[str, List[str]]) -> List[str]:
 
 class Article:
     def __init__(self, title: str, url: str, source: str,
-                 published: datetime.datetime, summary: str = ""):
+                 published: datetime.datetime, summary: str = "",
+                 source_type: str = "rss", raw_body: str = ""):
         self.title = title
         self.url = url
         self.source = source
@@ -60,6 +61,8 @@ class Article:
         self.ai_summary: str = ""
         self.action: str = ""
         self.talk: str = ""
+        self.source_type = source_type
+        self.raw_body = raw_body
 
 
 def fetch_rss(url: str, name: str) -> List[Article]:
@@ -119,7 +122,8 @@ def fetch_rss(url: str, name: str) -> List[Article]:
                 continue
 
             articles.append(Article(title=title, url=link, source=name,
-                                     published=published, summary=summary))
+                                     published=published, summary=summary,
+                                     source_type="rss"))
 
         log(f"[RSS] {name} 完成，有效 {len(articles)} 篇")
     except Exception as e:
@@ -127,7 +131,7 @@ def fetch_rss(url: str, name: str) -> List[Article]:
     return articles
 
 
-def fetch_github_releases(url: str, name: str) -> List[Article]:
+def fetch_github_releases(url: str, name: str, max_count: int = 2) -> List[Article]:
     articles: List[Article] = []
     cutoff = datetime.datetime.now() - datetime.timedelta(days=7)
     headers = {
@@ -148,7 +152,7 @@ def fetch_github_releases(url: str, name: str) -> List[Article]:
             return articles
 
         count = 0
-        for rel in releases[:5]:
+        for rel in releases[:max_count]:
             published_str = rel.get("published_at", "")
             if not published_str:
                 continue
@@ -165,7 +169,8 @@ def fetch_github_releases(url: str, name: str) -> List[Article]:
             tag = rel.get("tag_name", "未知版本")
             title = f"[{name}] Release {tag}"
             link = rel.get("html_url", "")
-            body = rel.get("body") or ""
+            body_raw = rel.get("body") or ""
+            body = body_raw
             body = re.sub(r"!\[.*?\]\(.*?\)", "", body)
             body = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", body)
             for ch in "#*`>_-":
@@ -176,7 +181,8 @@ def fetch_github_releases(url: str, name: str) -> List[Article]:
                 continue
 
             articles.append(Article(title=title, url=link, source=f"GitHub-{name}",
-                                     published=published, summary=summary))
+                                     published=published, summary=summary,
+                                     source_type="github_release", raw_body=body_raw))
             count += 1
 
         log(f"[GitHub] {name} 完成，有效 {count} 篇")
@@ -216,6 +222,12 @@ FILTER_PROMPT_TEMPLATE = """你是一名国企AI技术顾问。请分析以下�
 标题：{title}
 摘要：{summary}
 
+【评分指导】
+你是为国企数据中心运维工程师筛选资讯。请放宽标准：
+- 涉及开源模型、国产大模型（千问/DeepSeek/Kimi/智谱）、AI Agent框架、RAG工具、国产算力适配的文章，即使不直接讲运维，也可能对我们的技术选型有影响，请给至少2分。
+- 涉及办公自动化（文档/PPT/邮件/Excel/RPA）、数字员工、智能会议的文章，给至少2分。
+- 只有纯娱乐、纯消费级硬件、纯学术理论（无落地价值）的文章才给0-1分。
+
 【输出要求】
 请严格只输出以下JSON格式，不要任何其他文字，不要markdown代码块：
 
@@ -254,6 +266,7 @@ def ai_filter(article: Article, cfg: Dict[str, Any]) -> Optional[Article]:
         resp.raise_for_status()
         data = resp.json()
         raw_text = data["content"][0]["text"]
+        log(f"[AI过滤] 原始响应: {raw_text[:200]}")
         cleaned = raw_text.strip()
         if cleaned.startswith("```json"):
             cleaned = cleaned[7:]
@@ -283,10 +296,59 @@ def ai_filter(article: Article, cfg: Dict[str, Any]) -> Optional[Article]:
         log(f"[AI过滤] 未知异常: {traceback.format_exc()}")
     return None
 
-def generate_html(results: List[Article]) -> str:
+
+RELEASE_TAG_MAP = {
+    "LangChain": ["办公-RPA", "Agent-运维"],
+    "Ollama": ["工程-部署", "模型-开源"],
+    "vLLM": ["工程-部署", "算力-国产"],
+    "Dify": ["办公-数字员工", "Agent-运维"],
+    "FastGPT": ["RAG-运维知识库", "办公-数字员工"],
+    "RAGFlow": ["RAG-运维知识库", "工程-部署"],
+    "MaxKB": ["RAG-运维知识库", "办公-文档"],
+    "QAnything": ["RAG-运维知识库", "模型-国产"],
+}
+
+SECURITY_KEYWORDS = ["security", "fix", "bug", "cve", "critical", "breaking"]
+
+
+def auto_score_release(article: Article) -> Article:
+    project = article.source.replace("GitHub-", "")
+
+    body_lower = article.raw_body.lower()
+    if any(k in body_lower for k in SECURITY_KEYWORDS):
+        article.score = 4
+    else:
+        article.score = 3
+
+    article.tags = RELEASE_TAG_MAP.get(project, ["模型-开源", "工程-部署"])[:2]
+
+    first_line = ""
+    for line in article.raw_body.splitlines():
+        stripped = line.strip()
+        if stripped:
+            stripped = re.sub(r"!\[.*?\]\(.*?\)", "", stripped)
+            stripped = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", stripped)
+            for ch in "#*`>_-":
+                stripped = stripped.replace(ch, "")
+            first_line = stripped.strip()
+            break
+
+    if first_line:
+        article.ai_summary = first_line[:120]
+    else:
+        tag = article.title.split("Release ")[-1] if "Release " in article.title else "新版本"
+        article.ai_summary = f"发布新版本 {tag}"
+
+    article.action = "评估该版本是否涉及安全修复或性能提升，决定是否在内网测试环境升级验证"
+    article.talk = "该工具是我们技术栈的重要组件，此版本更新可能影响现有部署方案，建议安排评估"
+
+    return article
+
+
+def generate_html(rss_articles: List[Article], release_articles: List[Article]) -> str:
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    high = [a for a in results if (a.score or 0) >= 4]
-    normal = [a for a in results if (a.score or 0) == 3]
+    high = [a for a in rss_articles if (a.score or 0) >= 3]
+    normal = [a for a in rss_articles if (a.score or 0) == 2]
 
     def esc(text: str) -> str:
         return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
@@ -313,6 +375,7 @@ def generate_html(results: List[Article]) -> str:
         return "\n".join(lines)
 
     def render_normal(art: Article) -> str:
+        badges = "".join(f'<span class="badge">{esc(t)}</span>' for t in art.tags)
         lines = [
             '    <div class="article normal">',
             '      <div class="article-header">',
@@ -320,11 +383,42 @@ def generate_html(results: List[Article]) -> str:
             f'        <a href="{art.url}" target="_blank" class="article-title">{esc(art.title)}</a>',
             '      </div>',
             f'      <div class="meta">来源：{esc(art.source)} | ID：{art.id}</div>',
-            f'      <div class="summary">{esc(art.summary)}</div>',
+            f'      <div class="badges">{badges}</div>',
+            f'      <div class="summary">{esc(art.ai_summary)}</div>',
             '    </div>',
             '',
         ]
         return "\n".join(lines)
+
+    def render_release(art: Article) -> str:
+        if art.score == 4:
+            type_label = "🔴 安全/重要"
+            type_cls = "release-security"
+        else:
+            type_label = "🔵 常规更新"
+            type_cls = "release-normal"
+
+        version = art.title.split("Release ")[-1] if "Release " in art.title else ""
+        project = art.source.replace("GitHub-", "")
+
+        badges = "".join(f'<span class="badge">{esc(t)}</span>' for t in art.tags)
+
+        lines = [
+            '    <div class="article release">',
+            '      <div class="article-header">',
+            f'        <span class="release-type {type_cls}">{type_label}</span>',
+            f'        <a href="{art.url}" target="_blank" class="article-title">{esc(project)} {esc(version)}</a>',
+            '      </div>',
+            f'      <div class="meta">来源：{esc(art.source)}</div>',
+            f'      <div class="badges">{badges}</div>',
+            f'      <div class="summary">{esc(art.ai_summary)}</div>',
+            '    </div>',
+            '',
+        ]
+        return "\n".join(lines)
+
+    total_count = len(rss_articles) + len(release_articles)
+    high_value_count = len([a for a in rss_articles if (a.score or 0) >= 4])
 
     html_parts = [
         '<!DOCTYPE html>',
@@ -378,12 +472,14 @@ def generate_html(results: List[Article]) -> str:
         '    padding-left: 0.75rem; border-left: 4px solid var(--border-blue);',
         '  }',
         '  .section-title.normal { border-left-color: var(--border-gray); }',
+        '  .section-title.release { border-left-color: #20c997; }',
         '  .article {',
         '    background: var(--card-bg); border-radius: 0.5rem; padding: 1.25rem;',
         '    margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08);',
         '    border-left: 4px solid var(--border-blue);',
         '  }',
         '  .article.normal { border-left-color: var(--border-gray); }',
+        '  .article.release { border-left-color: #20c997; }',
         '  .article-header {',
         '    display: flex; flex-wrap: wrap; align-items: baseline;',
         '    gap: 0.5rem; margin-bottom: 0.5rem;',
@@ -410,6 +506,12 @@ def generate_html(results: List[Article]) -> str:
         '    font-size: 0.85rem; color: #664d03;',
         '  }',
         '  .talk strong { display: block; margin-bottom: 0.2rem; color: #856404; }',
+        '  .release-type {',
+        '    font-size: 0.8rem; font-weight: 600; padding: 0.15rem 0.5rem;',
+        '    border-radius: 0.25rem; margin-right: 0.3rem;',
+        '  }',
+        '  .release-type.release-security { background: #f8d7da; color: #721c24; }',
+        '  .release-type.release-normal { background: #d1ecf1; color: #0c5460; }',
         '  footer {',
         '    text-align: center; color: var(--text-secondary); font-size: 0.8rem;',
         '    padding: 2rem 1rem; border-top: 1px solid #dee2e6; margin-top: 2rem;',
@@ -429,26 +531,35 @@ def generate_html(results: List[Article]) -> str:
         '    <p class="subtitle">运维 + 办公双场景技术资讯过滤</p>',
         '  </header>',
         '  <div class="stats">',
-        f'    <div class="stat-item"><div class="number">{len(results)}</div><div class="label">共筛选</div></div>',
-        f'    <div class="stat-item"><div class="number">{len(high)}</div><div class="label">高价值</div></div>',
+        f'    <div class="stat-item"><div class="number">{total_count}</div><div class="label">共筛选</div></div>',
+        f'    <div class="stat-item"><div class="number">{high_value_count}</div><div class="label">高价值</div></div>',
+        f'    <div class="stat-item"><div class="number">{len(rss_articles)}</div><div class="label">RSS资讯</div></div>',
+        f'    <div class="stat-item"><div class="number">{len(release_articles)}</div><div class="label">工具更新</div></div>',
         '  </div>',
     ]
 
     if high:
         html_parts.append('  <div class="section">')
-        html_parts.append('    <div class="section-title">🔥 高优先级（4-5分）</div>')
+        html_parts.append('    <div class="section-title">🔥 高优先级（3-5分）</div>')
         for art in high:
             html_parts.append(render_high(art))
         html_parts.append('  </div>')
 
     if normal:
         html_parts.append('  <div class="section">')
-        html_parts.append('    <div class="section-title normal">📌 值得关注（3分）</div>')
+        html_parts.append('    <div class="section-title normal">📌 值得关注（2分）</div>')
         for art in normal:
             html_parts.append(render_normal(art))
         html_parts.append('  </div>')
 
-    if not results:
+    if release_articles:
+        html_parts.append('  <div class="section">')
+        html_parts.append('    <div class="section-title release">🛠 开源基础设施更新</div>')
+        for art in release_articles:
+            html_parts.append(render_release(art))
+        html_parts.append('  </div>')
+
+    if not rss_articles and not release_articles:
         html_parts.append('  <div class="section" style="text-align:center;color:var(--text-secondary);padding:3rem 1rem;">今日无符合条件的资讯</div>')
 
     sources_list = [
@@ -475,9 +586,10 @@ def generate_html(results: List[Article]) -> str:
     log(f"[HTML] 已生成: {path}")
     return path
 
+
 def generate_md(results: List[Article]) -> str:
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    high = [a for a in results if (a.score or 0) >= 4]
+    high = [a for a in results if (a.score or 0) >= 3]
     lines = [
         f"# AI日报 {today} — 高优先级归档",
         "",
@@ -537,54 +649,77 @@ def main():
     if not api_key:
         log("[致命错误] 环境变量 MOONSHOT_API_KEY 未设置")
         sys.exit(1)
-    min_score = cfg.get("filter", {}).get("min_score", 3)
-    max_articles = cfg.get("filter", {}).get("max_articles_per_day", 15)
+
+    min_score = cfg.get("filter", {}).get("min_score", 2)
+    max_articles = cfg.get("filter", {}).get("max_articles_per_day", 20)
+    gh_cfg = cfg.get("filter", {}).get("github_releases", {})
+    gh_max_per_source = gh_cfg.get("max_per_source", 2)
+
     all_articles: List[Article] = []
     for src in cfg.get("sources", {}).get("rss", []):
         all_articles.extend(fetch_rss(src["url"], src["name"]))
     for src in cfg.get("sources", {}).get("github_releases", []):
-        all_articles.extend(fetch_github_releases(src["url"], src["name"]))
+        all_articles.extend(fetch_github_releases(src["url"], src["name"], gh_max_per_source))
+
     log(f"[采集] 总计 {len(all_articles)} 篇")
-    if not all_articles:
-        log("[采集] 无数据，生成空日报")
-        generate_html([])
-        generate_md([])
-        cleanup_old_md()
-        log("运行结束")
-        return
-    filtered = prefilter(all_articles, cfg)
-    if not filtered:
-        log("[预过滤] 无匹配，生成空日报")
-        generate_html([])
-        generate_md([])
-        cleanup_old_md()
-        log("运行结束")
-        return
-    scored: List[Article] = []
-    ai_limit = 30
-    for idx, art in enumerate(filtered[:ai_limit], 1):
-        log(f"[AI过滤] ({idx}/{min(len(filtered), ai_limit)}) 分析: {art.title[:40]}...")
-        result = ai_filter(art, cfg)
-        if result is None:
-            log(f"[AI过滤] 失败，跳过: {art.title[:40]}...")
-            continue
-        log(f"[AI过滤] 评分: {result.score} | 标签: {result.tags}")
-        if result.score >= min_score:
-            scored.append(result)
-        else:
-            log(f"[AI过滤] 丢弃（分数不足）: {art.title[:40]}...")
-    log(f"[AI过滤] 保留 >= {min_score} 分的文章: {len(scored)} 篇")
-    seen: set = set()
-    deduped: List[Article] = []
-    for art in scored:
-        if art.id not in seen:
-            seen.add(art.id)
-            deduped.append(art)
-    if len(deduped) < len(scored):
-        log(f"[去重] 去除 {len(scored) - len(deduped)} 篇重复，剩余 {len(deduped)} 篇")
-    final = deduped[:max_articles]
-    log(f"[截断] 最终输出 {len(final)} 篇（上限 {max_articles}）")
-    generate_html(final)
+
+    rss_articles = [a for a in all_articles if a.source_type == "rss"]
+    release_articles = [a for a in all_articles if a.source_type == "github_release"]
+    log(f"[采集] RSS {len(rss_articles)} 篇, Release {len(release_articles)} 篇")
+
+    filtered_rss = prefilter(rss_articles, cfg)
+
+    scored_releases: List[Article] = []
+    for art in release_articles:
+        auto_score_release(art)
+        scored_releases.append(art)
+        log(f"[Release自动评分] {art.title[:50]}... | score={art.score} | tags={art.tags}")
+
+    scored_rss: List[Article] = []
+    if filtered_rss:
+        ai_limit = 30
+        for idx, art in enumerate(filtered_rss[:ai_limit], 1):
+            log(f"[AI过滤] ({idx}/{min(len(filtered_rss), ai_limit)}) 分析: {art.title[:40]}...")
+            result = ai_filter(art, cfg)
+            if result is None:
+                log(f"[AI过滤] 失败，跳过: {art.title[:40]}...")
+                continue
+            log(f"[AI过滤] 评分: {result.score} | 标签: {result.tags}")
+            if result.score >= min_score:
+                scored_rss.append(result)
+            else:
+                log(f"[AI过滤] 丢弃（分数不足）: {art.title[:40]}...")
+        log(f"[AI过滤] 保留 >= {min_score} 分的RSS文章: {len(scored_rss)} 篇")
+    else:
+        log("[预过滤] 无匹配RSS文章")
+
+    seen_rss: set = set()
+    deduped_rss: List[Article] = []
+    for art in scored_rss:
+        if art.id not in seen_rss:
+            seen_rss.add(art.id)
+            deduped_rss.append(art)
+    if len(deduped_rss) < len(scored_rss):
+        log(f"[去重] RSS去除 {len(scored_rss) - len(deduped_rss)} 篇重复，剩余 {len(deduped_rss)} 篇")
+
+    seen_rel: set = set()
+    deduped_releases: List[Article] = []
+    for art in scored_releases:
+        if art.id not in seen_rel:
+            seen_rel.add(art.id)
+            deduped_releases.append(art)
+    if len(deduped_releases) < len(scored_releases):
+        log(f"[去重] Release去除 {len(scored_releases) - len(deduped_releases)} 篇重复，剩余 {len(deduped_releases)} 篇")
+
+    final = deduped_releases + deduped_rss
+    final = final[:max_articles]
+
+    final_releases = [a for a in final if a.source_type == "github_release"]
+    final_rss = [a for a in final if a.source_type == "rss"]
+
+    log(f"[截断] 最终输出 RSS {len(final_rss)} 篇, Release {len(final_releases)} 篇（上限 {max_articles}）")
+
+    generate_html(final_rss, final_releases)
     generate_md(final)
     cleanup_old_md()
     log("=" * 60)
