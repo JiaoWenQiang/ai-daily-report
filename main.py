@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-AI日报自动采集与过滤
-- RSS抓取 + GitHub Release采集
-- Kimi Coding API (Anthropic兼容格式) 语义过滤
+AI办公日报自动采集与过滤
+- RSS办公资讯抓取
+- GitHub Trending本周热门开源项目抓取
+- Kimi Coding API 语义分析与办公价值评估
 - 生成静态HTML日报并发布到GitHub Pages
 """
 
@@ -46,10 +47,9 @@ def flatten_keywords(cfg_keywords: Dict[str, List[str]]) -> List[str]:
     return result
 
 
-class Article:
+class NewsItem:
     def __init__(self, title: str, url: str, source: str,
-                 published: datetime.datetime, summary: str = "",
-                 source_type: str = "rss", raw_body: str = ""):
+                 published: datetime.datetime, summary: str = ""):
         self.title = title
         self.url = url
         self.source = source
@@ -57,16 +57,30 @@ class Article:
         self.summary = summary
         self.id = md5_id(url)
         self.score: Optional[int] = None
-        self.tags: List[str] = []
-        self.ai_summary: str = ""
-        self.action: str = ""
-        self.talk: str = ""
-        self.source_type = source_type
-        self.raw_body = raw_body
+        self.core_summary: str = ""
+        self.office_advice: str = ""
+        self.scenarios: List[str] = []
+        self.thinking: str = ""
 
 
-def fetch_rss(url: str, name: str) -> List[Article]:
-    articles: List[Article] = []
+class RepoItem:
+    def __init__(self, name: str, url: str, description: str,
+                 language: str, stars: int):
+        self.name = name
+        self.url = url
+        self.description = description
+        self.language = language
+        self.stars = stars
+        self.id = md5_id(url)
+        self.score: Optional[int] = None
+        self.core_summary: str = ""
+        self.office_value: str = ""
+        self.combo_usage: str = ""
+        self.thinking: str = ""
+
+
+def fetch_rss(url: str, name: str) -> List[NewsItem]:
+    items: List[NewsItem] = []
     cutoff = datetime.datetime.now() - datetime.timedelta(days=7)
     headers = {
         "User-Agent": (
@@ -121,135 +135,193 @@ def fetch_rss(url: str, name: str) -> List[Article]:
             if not link:
                 continue
 
-            articles.append(Article(title=title, url=link, source=name,
-                                     published=published, summary=summary,
-                                     source_type="rss"))
+            items.append(NewsItem(title=title, url=link, source=name,
+                                  published=published, summary=summary))
 
-        log(f"[RSS] {name} 完成，有效 {len(articles)} 篇")
+        log(f"[RSS] {name} 完成，有效 {len(items)} 篇")
     except Exception as e:
         log(f"[RSS] 错误 {name}: {e}")
-    return articles
+    return items
 
 
-def fetch_github_releases(url: str, name: str, max_count: int = 2) -> List[Article]:
-    articles: List[Article] = []
-    cutoff = datetime.datetime.now() - datetime.timedelta(days=7)
+def fetch_github_trending() -> List[RepoItem]:
+    repos: List[RepoItem] = []
     headers = {
-        "User-Agent": "AI-Daily-News-Bot/1.0",
-        "Accept": "application/vnd.github.v3+json",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept": "text/html",
     }
-    log(f"[GitHub] 开始抓取: {name} -> {url}")
+    url = "https://github.com/trending?since=weekly"
+    log(f"[GitHub] 开始抓取 Trending: {url}")
     try:
         resp = requests.get(url, headers=headers, timeout=30)
-        if resp.status_code == 403:
-            log(f"[GitHub] 警告 {name}: 403 限流，跳过")
-            return articles
         resp.raise_for_status()
-        releases = resp.json()
+        html = resp.text
 
-        if not isinstance(releases, list):
-            log(f"[GitHub] 警告 {name}: 返回非列表数据: {str(releases)[:200]}")
-            return articles
-
-        count = 0
-        for rel in releases[:max_count]:
-            published_str = rel.get("published_at", "")
-            if not published_str:
+        blocks = re.findall(
+            r'<article[^>]*class="[^"]*Box-row[^"]*"[^>]*>(.*?)</article>',
+            html, re.DOTALL
+        )
+        for block in blocks[:20]:
+            name_match = re.search(
+                r'<h2[^>]*>.*?<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?</h2>',
+                block, re.DOTALL
+            )
+            if not name_match:
                 continue
-            try:
-                published = datetime.datetime.strptime(
-                    published_str.replace("Z", "+00:00"), "%Y-%m-%dT%H:%M:%S%z"
-                ).replace(tzinfo=None)
-            except Exception:
-                continue
+            repo_path = name_match.group(1).strip()
+            repo_name = re.sub(r'<[^>]+>', '', name_match.group(2)).strip()
+            repo_name = ' '.join(repo_name.split()).replace(' / ', '/')
+            if not repo_path.startswith('/'):
+                repo_path = '/' + repo_path
+            repo_url = f"https://github.com{repo_path}"
 
-            if published < cutoff:
-                continue
+            desc_match = re.search(
+                r'<p[^>]*class="[^"]*color-fg-muted[^"]*"[^>]*>(.*?)</p>',
+                block, re.DOTALL
+            )
+            description = ""
+            if desc_match:
+                description = re.sub(r'<[^>]+>', '', desc_match.group(1)).strip()
 
-            tag = rel.get("tag_name", "未知版本")
-            title = f"[{name}] Release {tag}"
-            link = rel.get("html_url", "")
-            body_raw = rel.get("body") or ""
-            body = body_raw
-            body = re.sub(r"!\[.*?\]\(.*?\)", "", body)
-            body = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", body)
-            for ch in "#*`>_-":
-                body = body.replace(ch, "")
-            summary = body.strip()[:800]
+            lang_match = re.search(
+                r'<span[^>]*itemprop="programmingLanguage"[^>]*>(.*?)</span>',
+                block, re.DOTALL
+            )
+            language = re.sub(r'<[^>]+>', '', lang_match.group(1)).strip() if lang_match else "未知"
 
-            if not link:
-                continue
+            star_match = re.search(
+                r'(\d[\d,]*)\s*stars?\s*(?:today|this\s*week)',
+                block, re.IGNORECASE
+            )
+            stars = 0
+            if star_match:
+                try:
+                    stars = int(star_match.group(1).replace(',', ''))
+                except ValueError:
+                    stars = 0
 
-            articles.append(Article(title=title, url=link, source=f"GitHub-{name}",
-                                     published=published, summary=summary,
-                                     source_type="github_release", raw_body=body_raw))
-            count += 1
+            repos.append(RepoItem(
+                name=repo_name, url=repo_url, description=description,
+                language=language, stars=stars
+            ))
 
-        log(f"[GitHub] {name} 完成，有效 {count} 篇")
-    except requests.exceptions.RequestException as e:
-        log(f"[GitHub] 请求错误 {name}: {e}")
+        if repos:
+            log(f"[GitHub] Trending 完成，有效 {len(repos)} 个")
+            return repos
     except Exception as e:
-        log(f"[GitHub] 错误 {name}: {e}")
-    return articles
+        log(f"[GitHub] Trending 页面抓取失败: {e}")
+
+    log("[GitHub] Fallback 到 Search API")
+    try:
+        week_ago = (datetime.datetime.now() - datetime.timedelta(days=7)).strftime("%Y-%m-%d")
+        search_url = (
+            f"https://api.github.com/search/repositories"
+            f"?q=pushed:>{week_ago}&sort=stars&order=desc&per_page=20"
+        )
+        api_headers = {
+            "Accept": "application/vnd.github.v3+json",
+            "User-Agent": "AI-Daily-News-Bot/1.0",
+        }
+        token = os.environ.get("GITHUB_TOKEN", "")
+        if token:
+            api_headers["Authorization"] = f"Bearer {token}"
+
+        resp = requests.get(search_url, headers=api_headers, timeout=30)
+        resp.raise_for_status()
+        data = resp.json()
+        for item in data.get("items", [])[:20]:
+            repos.append(RepoItem(
+                name=item.get("full_name", ""),
+                url=item.get("html_url", ""),
+                description=item.get("description") or "",
+                language=item.get("language") or "未知",
+                stars=item.get("stargazers_count", 0),
+            ))
+        log(f"[GitHub] Search API 完成，有效 {len(repos)} 个")
+    except Exception as e:
+        log(f"[GitHub] Search API 也失败: {e}")
+    return repos
 
 
-def prefilter(articles: List[Article], cfg: Dict[str, Any]) -> List[Article]:
+def prefilter_news(items: List[NewsItem], cfg: Dict[str, Any]) -> List[NewsItem]:
     keywords = flatten_keywords(cfg.get("keywords", {}))
-    filtered: List[Article] = []
-    for art in articles:
-        text = (art.title + " " + art.summary).lower()
+    filtered: List[NewsItem] = []
+    for it in items:
+        text = (it.title + " " + it.summary).lower()
         matched = [k for k in keywords if k.lower() in text]
         if matched:
-            log(f"[预过滤] 保留: {art.title[:40]}... | 匹配: {matched}")
-            filtered.append(art)
+            log(f"[预过滤] 保留: {it.title[:40]}... | 匹配: {matched}")
+            filtered.append(it)
         else:
-            log(f"[预过滤] 丢弃: {art.title[:40]}...")
-    log(f"[预过滤] 统计: 保留 {len(filtered)} / {len(articles)} 篇")
+            log(f"[预过滤] 丢弃: {it.title[:40]}...")
+    log(f"[预过滤] 统计: 保留 {len(filtered)} / {len(items)} 篇")
     return filtered
 
 
-VALID_TAGS = [
-    "AIOps-日志", "AIOps-告警", "AIOps-变更", "AIOps-容量",
-    "Agent-运维", "RAG-运维知识库", "算力-昇腾", "算力-国产",
-    "办公-文档", "办公-PPT", "办公-会议", "办公-邮件",
-    "办公-Excel", "办公-RPA", "办公-数字员工",
-    "模型-国产", "模型-开源", "工程-部署", "安全-幻觉"
-]
-
-FILTER_PROMPT_TEMPLATE = """你是一名国企AI技术顾问。请分析以下文章，判断与"数据中心运维"或"国企办公智能化"的相关度。
+NEWS_PROMPT_TEMPLATE = """你是一名企业办公效率顾问。请分析以下资讯，判断它对【办公场景】的实际价值。
 
 【文章】
 标题：{title}
 摘要：{summary}
 
-【评分指导】
-你是为国企数据中心运维工程师筛选资讯。请放宽标准：
-- 涉及开源模型、国产大模型（千问/DeepSeek/Kimi/智谱）、AI Agent框架、RAG工具、国产算力适配的文章，即使不直接讲运维，也可能对我们的技术选型有影响，请给至少2分。
-- 涉及办公自动化（文档/PPT/邮件/Excel/RPA）、数字员工、智能会议的文章，给至少2分。
-- 只有纯娱乐、纯消费级硬件、纯学术理论（无落地价值）的文章才给0-1分。
+【输出要求】
+请严格只输出以下JSON格式，不要任何其他文字，不要markdown代码块：
+
+{{
+  "score": 1-5,
+  "core_summary": "核心内容简介（中文，通俗易懂，50字内）",
+  "office_advice": "办公使用建议（怎么用、能解决什么问题，80字内）",
+  "scenarios": ["场景1：...", "场景2：..."],
+  "thinking": "发散思考（延伸用法、组合用法、优化方向，80字内）"
+}}
+
+评分标准（1-5分）：
+5分 = 可直接改变办公方式，有明确落地路径
+4分 = 办公价值高，短期可尝试
+3分 = 有一定办公参考价值
+2分 = 间接相关，可了解
+1分 = 几乎无办公价值
+
+注意：纯软件版本号更新、框架小版本迭代、无实际办公价值的纯技术更新，请给1分。"""
+
+
+REPO_PROMPT_TEMPLATE = """你是一名企业办公效率顾问。请分析以下开源项目，评估它在【办公场景】的实用价值。
+
+【项目】
+名称：{name}
+描述：{description}
+开发语言：{language}
+星标数：{stars}
 
 【输出要求】
 请严格只输出以下JSON格式，不要任何其他文字，不要markdown代码块：
 
 {{
-  "score": 0-5,
-  "tags": ["标签1", "标签2"],
-  "summary": "一句话技术总结（工程师语言，不浮夸）",
-  "action": "如果score>=3，给出2周内可验证的具体动作",
-  "talk": "如果score>=4，给出30秒向技术型领导汇报的话术，包含技术价值和业务价值"
+  "score": 1-5,
+  "core_summary": "核心功能介绍（中文总结，50字内）",
+  "office_value": "AI分析：这个工具可以用来做什么、办公场景价值（80字内）",
+  "combo_usage": "组合用法：可以和哪些工具/AI/现有工作流结合使用（80字内）",
+  "thinking": "发散思考：拓展用法、落地优化方向、风险提示（80字内）"
 }}
 
-标签必须从以下枚举中选择（最多3个）：
-AIOps-日志、AIOps-告警、AIOps-变更、AIOps-容量、Agent-运维、RAG-运维知识库、算力-昇腾、算力-国产、办公-文档、办公-PPT、办公-会议、办公-邮件、办公-Excel、办公-RPA、办公-数字员工、模型-国产、模型-开源、工程-部署、安全-幻觉"""
+评分标准（1-5分）：
+5分 = 可直接用于办公提效，开箱即用
+4分 = 办公价值高，配置后可使用
+3分 = 有办公参考或定制价值
+2分 = 偏技术，办公价值有限
+1分 = 几乎无办公价值"""
 
 
-def ai_filter(article: Article, cfg: Dict[str, Any]) -> Optional[Article]:
+def call_ai_api(prompt: str, cfg: Dict[str, Any]) -> Optional[str]:
     api_key = os.environ.get("MOONSHOT_API_KEY", "")
     if not api_key:
-        log("[AI过滤] 错误: 环境变量 MOONSHOT_API_KEY 未设置")
+        log("[AI] 错误: 环境变量 MOONSHOT_API_KEY 未设置")
         return None
     model = cfg.get("filter", {}).get("model", "kimi-for-coding")
-    prompt = FILTER_PROMPT_TEMPLATE.format(title=article.title, summary=article.summary)
     url = "https://api.kimi.com/coding/v1/messages"
     headers = {
         "x-api-key": api_key,
@@ -266,159 +338,175 @@ def ai_filter(article: Article, cfg: Dict[str, Any]) -> Optional[Article]:
         resp.raise_for_status()
         data = resp.json()
         raw_text = data["content"][0]["text"]
-        log(f"[AI过滤] 原始响应: {raw_text[:200]}")
-        cleaned = raw_text.strip()
-        if cleaned.startswith("```json"):
-            cleaned = cleaned[7:]
-        elif cleaned.startswith("```"):
-            cleaned = cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-        result = json.loads(cleaned)
-        try:
-            article.score = int(result.get("score", 0))
-        except (ValueError, TypeError):
-            article.score = 0
-        raw_tags = result.get("tags", [])
-        article.tags = [t for t in raw_tags if t in VALID_TAGS][:3]
-        article.ai_summary = result.get("summary", "")
-        article.action = result.get("action", "")
-        article.talk = result.get("talk", "")
-        return article
+        log(f"[AI] 原始响应: {raw_text[:200]}")
+        return raw_text
     except requests.exceptions.HTTPError as e:
-        log(f"[AI过滤] HTTP错误: {e.response.status_code} | {e.response.text[:200]}")
-    except json.JSONDecodeError as e:
-        log(f"[AI过滤] JSON解析错误: {e} | 原始文本: {raw_text[:200]}")
+        log(f"[AI] HTTP错误: {e.response.status_code} | {e.response.text[:200]}")
     except (KeyError, IndexError) as e:
-        log(f"[AI过滤] 响应结构错误: {e}")
+        log(f"[AI] 响应结构错误: {e}")
     except Exception:
-        log(f"[AI过滤] 未知异常: {traceback.format_exc()}")
+        log(f"[AI] 未知异常: {traceback.format_exc()}")
     return None
 
 
-RELEASE_TAG_MAP = {
-    "LangChain": ["办公-RPA", "Agent-运维"],
-    "Ollama": ["工程-部署", "模型-开源"],
-    "vLLM": ["工程-部署", "算力-国产"],
-    "Dify": ["办公-数字员工", "Agent-运维"],
-    "FastGPT": ["RAG-运维知识库", "办公-数字员工"],
-    "RAGFlow": ["RAG-运维知识库", "工程-部署"],
-    "MaxKB": ["RAG-运维知识库", "办公-文档"],
-    "QAnything": ["RAG-运维知识库", "模型-国产"],
-}
+def parse_json_from_ai(raw_text: str) -> Optional[Dict[str, Any]]:
+    if not raw_text:
+        return None
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        log(f"[AI] JSON解析错误: {e} | 原始文本: {raw_text[:200]}")
+    return None
 
-SECURITY_KEYWORDS = ["security", "fix", "bug", "cve", "critical", "breaking"]
 
-
-def auto_score_release(article: Article) -> Article:
-    project = article.source.replace("GitHub-", "")
-
-    body_lower = article.raw_body.lower()
-    if any(k in body_lower for k in SECURITY_KEYWORDS):
-        article.score = 4
+def ai_analyze_news(item: NewsItem, cfg: Dict[str, Any]) -> Optional[NewsItem]:
+    prompt = NEWS_PROMPT_TEMPLATE.format(title=item.title, summary=item.summary)
+    raw_text = call_ai_api(prompt, cfg)
+    result = parse_json_from_ai(raw_text)
+    if result is None:
+        return None
+    try:
+        item.score = int(result.get("score", 0))
+    except (ValueError, TypeError):
+        item.score = 0
+    item.core_summary = result.get("core_summary", "")
+    item.office_advice = result.get("office_advice", "")
+    raw_scenarios = result.get("scenarios", [])
+    if isinstance(raw_scenarios, list):
+        item.scenarios = [str(s) for s in raw_scenarios][:3]
     else:
-        article.score = 3
-
-    article.tags = RELEASE_TAG_MAP.get(project, ["模型-开源", "工程-部署"])[:2]
-
-    first_line = ""
-    for line in article.raw_body.splitlines():
-        stripped = line.strip()
-        if stripped:
-            stripped = re.sub(r"!\[.*?\]\(.*?\)", "", stripped)
-            stripped = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", stripped)
-            for ch in "#*`>_-":
-                stripped = stripped.replace(ch, "")
-            first_line = stripped.strip()
-            break
-
-    if first_line:
-        article.ai_summary = first_line[:120]
-    else:
-        tag = article.title.split("Release ")[-1] if "Release " in article.title else "新版本"
-        article.ai_summary = f"发布新版本 {tag}"
-
-    article.action = "评估该版本是否涉及安全修复或性能提升，决定是否在内网测试环境升级验证"
-    article.talk = "该工具是我们技术栈的重要组件，此版本更新可能影响现有部署方案，建议安排评估"
-
-    return article
+        item.scenarios = []
+    item.thinking = result.get("thinking", "")
+    return item
 
 
-def generate_html(rss_articles: List[Article], release_articles: List[Article]) -> str:
+def ai_analyze_repo(item: RepoItem, cfg: Dict[str, Any]) -> Optional[RepoItem]:
+    prompt = REPO_PROMPT_TEMPLATE.format(
+        name=item.name, description=item.description,
+        language=item.language, stars=item.stars
+    )
+    raw_text = call_ai_api(prompt, cfg)
+    result = parse_json_from_ai(raw_text)
+    if result is None:
+        return None
+    try:
+        item.score = int(result.get("score", 0))
+    except (ValueError, TypeError):
+        item.score = 0
+    item.core_summary = result.get("core_summary", "")
+    item.office_value = result.get("office_value", "")
+    item.combo_usage = result.get("combo_usage", "")
+    item.thinking = result.get("thinking", "")
+    return item
+
+
+def generate_html(news_items: List[NewsItem], repo_items: List[RepoItem]) -> str:
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    high = [a for a in rss_articles if (a.score or 0) >= 3]
-    normal = [a for a in rss_articles if (a.score or 0) == 2]
 
     def esc(text: str) -> str:
+        if not text:
+            return ""
         return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
-    def render_high(art: Article) -> str:
-        score_cls = "score-5" if art.score == 5 else "score-4"
-        badges = "".join(f'<span class="badge">{esc(t)}</span>' for t in art.tags)
-        action_html = f'<div class="action"><strong>落地建议：</strong>{esc(art.action)}</div>' if art.action else ""
-        talk_html = f'<div class="talk"><strong>💡 领导话术</strong>{esc(art.talk)}</div>' if art.talk else ""
+    def score_class(score: Optional[int]) -> str:
+        if score == 5:
+            return "score-5"
+        if score == 4:
+            return "score-4"
+        if score == 3:
+            return "score-3"
+        if score == 2:
+            return "score-2"
+        return "score-1"
+
+    def score_label(score: Optional[int]) -> str:
+        mapping = {5: "极高", 4: "高", 3: "中", 2: "一般", 1: "低", None: "未评"}
+        return mapping.get(score, "未评")
+
+    def render_news_card(it: NewsItem) -> str:
+        scls = score_class(it.score)
+        slbl = score_label(it.score)
+        scenarios_html = ""
+        if it.scenarios:
+            scenarios_html = '<ul class="scenario-list">' + "".join(
+                f'<li>{esc(s)}</li>' for s in it.scenarios
+            ) + '</ul>'
         lines = [
-            '    <div class="article">',
-            '      <div class="article-header">',
-            f'        <span class="score {score_cls}">[{art.score}分]</span>',
-            f'        <a href="{art.url}" target="_blank" class="article-title">{esc(art.title)}</a>',
+            '    <div class="card news-card">',
+            '      <div class="card-header">',
+            f'        <span class="score-badge {scls}">{it.score}分 · {slbl}</span>',
+            f'        <a href="{it.url}" target="_blank" class="card-title">{esc(it.title)}</a>',
+            f'        <span class="source-tag">{esc(it.source)}</span>',
             '      </div>',
-            f'      <div class="meta">来源：{esc(art.source)} | ID：{art.id}</div>',
-            f'      <div class="badges">{badges}</div>',
-            f'      <div class="summary">{esc(art.ai_summary)}</div>',
-            f'      {action_html}',
-            f'      {talk_html}',
+            '      <div class="card-body">',
+            '        <div class="field">',
+            '          <span class="field-label">📌 核心内容</span>',
+            f'          <p>{esc(it.core_summary)}</p>',
+            '        </div>',
+            '        <div class="field">',
+            '          <span class="field-label">💡 办公建议</span>',
+            f'          <p>{esc(it.office_advice)}</p>',
+            '        </div>',
+            '        <div class="field">',
+            '          <span class="field-label">🎯 落地场景</span>',
+            f'          {scenarios_html}',
+            '        </div>',
+            '        <div class="field">',
+            '          <span class="field-label">🔭 发散思考</span>',
+            f'          <p>{esc(it.thinking)}</p>',
+            '        </div>',
+            '      </div>',
             '    </div>',
             '',
         ]
         return "\n".join(lines)
 
-    def render_normal(art: Article) -> str:
-        badges = "".join(f'<span class="badge">{esc(t)}</span>' for t in art.tags)
+    def render_repo_card(it: RepoItem) -> str:
+        scls = score_class(it.score)
+        slbl = score_label(it.score)
+        stars_str = f"{it.stars:,}" if it.stars else "0"
         lines = [
-            '    <div class="article normal">',
-            '      <div class="article-header">',
-            f'        <span class="score">[{art.score}分]</span>',
-            f'        <a href="{art.url}" target="_blank" class="article-title">{esc(art.title)}</a>',
+            '    <div class="card repo-card">',
+            '      <div class="card-header">',
+            f'        <span class="score-badge {scls}">{it.score}分 · {slbl}</span>',
+            f'        <a href="{it.url}" target="_blank" class="card-title">{esc(it.name)}</a>',
+            f'        <span class="repo-meta">⭐ {stars_str} | {esc(it.language)}</span>',
             '      </div>',
-            f'      <div class="meta">来源：{esc(art.source)} | ID：{art.id}</div>',
-            f'      <div class="badges">{badges}</div>',
-            f'      <div class="summary">{esc(art.ai_summary)}</div>',
+            '      <div class="card-body">',
+            '        <div class="field">',
+            '          <span class="field-label">📌 核心功能</span>',
+            f'          <p>{esc(it.core_summary)}</p>',
+            '        </div>',
+            '        <div class="field">',
+            '          <span class="field-label">💼 办公价值</span>',
+            f'          <p>{esc(it.office_value)}</p>',
+            '        </div>',
+            '        <div class="field">',
+            '          <span class="field-label">🔗 组合用法</span>',
+            f'          <p>{esc(it.combo_usage)}</p>',
+            '        </div>',
+            '        <div class="field">',
+            '          <span class="field-label">🔭 发散思考</span>',
+            f'          <p>{esc(it.thinking)}</p>',
+            '        </div>',
+            '      </div>',
             '    </div>',
             '',
         ]
         return "\n".join(lines)
 
-    def render_release(art: Article) -> str:
-        if art.score == 4:
-            type_label = "🔴 安全/重要"
-            type_cls = "release-security"
-        else:
-            type_label = "🔵 常规更新"
-            type_cls = "release-normal"
-
-        version = art.title.split("Release ")[-1] if "Release " in art.title else ""
-        project = art.source.replace("GitHub-", "")
-
-        badges = "".join(f'<span class="badge">{esc(t)}</span>' for t in art.tags)
-
-        lines = [
-            '    <div class="article release">',
-            '      <div class="article-header">',
-            f'        <span class="release-type {type_cls}">{type_label}</span>',
-            f'        <a href="{art.url}" target="_blank" class="article-title">{esc(project)} {esc(version)}</a>',
-            '      </div>',
-            f'      <div class="meta">来源：{esc(art.source)}</div>',
-            f'      <div class="badges">{badges}</div>',
-            f'      <div class="summary">{esc(art.ai_summary)}</div>',
-            '    </div>',
-            '',
-        ]
-        return "\n".join(lines)
-
-    total_count = len(rss_articles) + len(release_articles)
-    high_value_count = len([a for a in rss_articles if (a.score or 0) >= 4])
+    total_news = len(news_items)
+    total_repos = len(repo_items)
+    high_news = len([n for n in news_items if (n.score or 0) >= 4])
+    high_repos = len([r for r in repo_items if (r.score or 0) >= 4])
 
     html_parts = [
         '<!DOCTYPE html>',
@@ -426,152 +514,154 @@ def generate_html(rss_articles: List[Article], release_articles: List[Article]) 
         '<head>',
         '<meta charset="UTF-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-        f'<title>AI日报 {today} | 运维+办公双场景</title>',
+        f'<title>AI办公日报 {today}</title>',
         '<style>',
         '  :root {',
-        '    --bg: #f8f9fa;',
+        '    --bg: #f5f7fa;',
         '    --card-bg: #ffffff;',
-        '    --text: #212529;',
-        '    --text-secondary: #6c757d;',
-        '    --border-blue: #0d6efd;',
-        '    --border-gray: #adb5bd;',
-        '    --score-5: #dc3545;',
-        '    --score-4: #fd7e14;',
-        '    --badge-bg: #e9ecef;',
-        '    --talk-bg: #fff3cd;',
-        '    --talk-border: #ffc107;',
-        '    --link: #0d6efd;',
+        '    --text: #1f2937;',
+        '    --text-secondary: #6b7280;',
+        '    --border: #e5e7eb;',
+        '    --link: #2563eb;',
+        '    --news-accent: #2563eb;',
+        '    --repo-accent: #059669;',
+        '    --score-5: #dc2626;',
+        '    --score-4: #ea580c;',
+        '    --score-3: #d97706;',
+        '    --score-2: #6b7280;',
+        '    --score-1: #9ca3af;',
         '  }',
         '  * { box-sizing: border-box; margin: 0; padding: 0; }',
         '  body {',
         '    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,',
-        '                 "Helvetica Neue", Arial, "Noto Sans SC", sans-serif;',
+        '                 "Helvetica Neue", Arial, "Noto Sans SC", "PingFang SC", sans-serif;',
         '    background: var(--bg);',
         '    color: var(--text);',
         '    line-height: 1.6;',
         '    padding: 1rem;',
         '  }',
-        '  .container { max-width: 960px; margin: 0 auto; }',
-        '  header { text-align: center; padding: 2rem 1rem; margin-bottom: 1.5rem; }',
-        '  header h1 { font-size: 1.75rem; font-weight: 700; margin-bottom: 0.5rem; }',
-        '  header .subtitle { color: var(--text-secondary); font-size: 0.95rem; }',
+        '  .container { max-width: 1100px; margin: 0 auto; }',
+        '  header { text-align: center; padding: 2.5rem 1rem 2rem; }',
+        '  header h1 { font-size: 2rem; font-weight: 800; margin-bottom: 0.5rem; letter-spacing: -0.02em; }',
+        '  header .subtitle { color: var(--text-secondary); font-size: 1rem; }',
         '  .stats {',
-        '    display: flex; justify-content: center; gap: 2rem;',
-        '    margin-bottom: 2rem; flex-wrap: wrap;',
+        '    display: flex; justify-content: center; gap: 1.5rem;',
+        '    margin-bottom: 2.5rem; flex-wrap: wrap;',
         '  }',
         '  .stat-item {',
-        '    background: var(--card-bg); padding: 1rem 1.5rem;',
-        '    border-radius: 0.5rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08);',
-        '    text-align: center; min-width: 120px;',
+        '    background: var(--card-bg); padding: 1rem 1.25rem;',
+        '    border-radius: 0.75rem; box-shadow: 0 1px 2px rgba(0,0,0,0.05);',
+        '    text-align: center; min-width: 100px; border: 1px solid var(--border);',
         '  }',
-        '  .stat-item .number { font-size: 1.5rem; font-weight: 700; color: var(--border-blue); }',
-        '  .stat-item .label { font-size: 0.8rem; color: var(--text-secondary); margin-top: 0.25rem; }',
-        '  .section { margin-bottom: 2rem; }',
-        '  .section-title {',
-        '    font-size: 1.1rem; font-weight: 600; margin-bottom: 1rem;',
-        '    padding-left: 0.75rem; border-left: 4px solid var(--border-blue);',
+        '  .stat-item .number { font-size: 1.5rem; font-weight: 700; color: var(--link); }',
+        '  .stat-item .label { font-size: 0.75rem; color: var(--text-secondary); margin-top: 0.25rem; }',
+        '  .module { margin-bottom: 3rem; }',
+        '  .module-header {',
+        '    display: flex; align-items: center; gap: 0.75rem;',
+        '    margin-bottom: 1.25rem; padding-bottom: 0.75rem;',
+        '    border-bottom: 2px solid var(--border);',
         '  }',
-        '  .section-title.normal { border-left-color: var(--border-gray); }',
-        '  .section-title.release { border-left-color: #20c997; }',
-        '  .article {',
-        '    background: var(--card-bg); border-radius: 0.5rem; padding: 1.25rem;',
-        '    margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.08);',
-        '    border-left: 4px solid var(--border-blue);',
+        '  .module-icon { font-size: 1.5rem; }',
+        '  .module-title { font-size: 1.25rem; font-weight: 700; }',
+        '  .module-subtitle { color: var(--text-secondary); font-size: 0.875rem; margin-left: auto; }',
+        '  .card {',
+        '    background: var(--card-bg); border-radius: 0.75rem;',
+        '    margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.06);',
+        '    border: 1px solid var(--border);',
+        '    overflow: hidden;',
         '  }',
-        '  .article.normal { border-left-color: var(--border-gray); }',
-        '  .article.release { border-left-color: #20c997; }',
-        '  .article-header {',
-        '    display: flex; flex-wrap: wrap; align-items: baseline;',
-        '    gap: 0.5rem; margin-bottom: 0.5rem;',
+        '  .news-card { border-left: 4px solid var(--news-accent); }',
+        '  .repo-card { border-left: 4px solid var(--repo-accent); }',
+        '  .card-header {',
+        '    display: flex; flex-wrap: wrap; align-items: center;',
+        '    gap: 0.6rem; padding: 1rem 1.25rem;',
+        '    background: #fafafa; border-bottom: 1px solid var(--border);',
         '  }',
-        '  .score { font-weight: 700; font-size: 1.1rem; }',
-        '  .score-5 { color: var(--score-5); }',
-        '  .score-4 { color: var(--score-4); }',
-        '  .article-title {',
+        '  .score-badge {',
+        '    font-size: 0.75rem; font-weight: 600; padding: 0.2rem 0.6rem;',
+        '    border-radius: 999px; color: #fff; white-space: nowrap;',
+        '  }',
+        '  .score-5 { background: var(--score-5); }',
+        '  .score-4 { background: var(--score-4); }',
+        '  .score-3 { background: var(--score-3); }',
+        '  .score-2 { background: var(--score-2); }',
+        '  .score-1 { background: var(--score-1); }',
+        '  .card-title {',
         '    font-size: 1.05rem; font-weight: 600; color: var(--link); text-decoration: none;',
         '  }',
-        '  .article-title:hover { text-decoration: underline; }',
-        '  .meta { font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem; }',
-        '  .badges { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.5rem; }',
-        '  .badge {',
-        '    background: var(--badge-bg); color: var(--text-secondary);',
-        '    font-size: 0.75rem; padding: 0.15rem 0.5rem; border-radius: 0.25rem;',
+        '  .card-title:hover { text-decoration: underline; }',
+        '  .source-tag { font-size: 0.75rem; color: var(--text-secondary); margin-left: auto; }',
+        '  .repo-meta { font-size: 0.8rem; color: var(--text-secondary); margin-left: auto; font-weight: 500; }',
+        '  .card-body { padding: 1rem 1.25rem; }',
+        '  .field { margin-bottom: 0.75rem; }',
+        '  .field:last-child { margin-bottom: 0; }',
+        '  .field-label {',
+        '    display: inline-block; font-size: 0.8rem; font-weight: 600;',
+        '    color: #374151; margin-bottom: 0.25rem;',
         '  }',
-        '  .summary { font-size: 0.9rem; margin-bottom: 0.5rem; }',
-        '  .action { font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem; }',
-        '  .action strong { color: var(--text); }',
-        '  .talk {',
-        '    background: var(--talk-bg); border: 1px solid var(--talk-border);',
-        '    border-radius: 0.35rem; padding: 0.6rem 0.8rem;',
-        '    font-size: 0.85rem; color: #664d03;',
-        '  }',
-        '  .talk strong { display: block; margin-bottom: 0.2rem; color: #856404; }',
-        '  .release-type {',
-        '    font-size: 0.8rem; font-weight: 600; padding: 0.15rem 0.5rem;',
-        '    border-radius: 0.25rem; margin-right: 0.3rem;',
-        '  }',
-        '  .release-type.release-security { background: #f8d7da; color: #721c24; }',
-        '  .release-type.release-normal { background: #d1ecf1; color: #0c5460; }',
+        '  .field p { font-size: 0.9rem; color: #4b5563; }',
+        '  .scenario-list { margin: 0.25rem 0 0 1.25rem; font-size: 0.9rem; color: #4b5563; }',
+        '  .scenario-list li { margin-bottom: 0.15rem; }',
+        '  .empty-tip { text-align:center; color: var(--text-secondary); padding: 3rem 1rem; }',
         '  footer {',
         '    text-align: center; color: var(--text-secondary); font-size: 0.8rem;',
-        '    padding: 2rem 1rem; border-top: 1px solid #dee2e6; margin-top: 2rem;',
+        '    padding: 2rem 1rem; border-top: 1px solid var(--border); margin-top: 1rem;',
         '  }',
-        '  footer .sources { margin-top: 0.5rem; line-height: 1.8; }',
         '  @media (max-width: 640px) {',
-        '    header h1 { font-size: 1.4rem; }',
-        '    .article { padding: 1rem; }',
+        '    header h1 { font-size: 1.5rem; }',
+        '    .card-header { padding: 0.875rem 1rem; }',
+        '    .card-body { padding: 0.875rem 1rem; }',
         '    .stats { gap: 1rem; }',
+        '    .module-subtitle { display: none; }',
         '  }',
         '</style>',
         '</head>',
         '<body>',
         '<div class="container">',
         '  <header>',
-        f'    <h1>🤖 AI日报 {today}</h1>',
-        '    <p class="subtitle">运维 + 办公双场景技术资讯过滤</p>',
+        f'    <h1>🤖 AI办公日报 {today}</h1>',
+        '    <p class="subtitle">聚焦办公场景 · 资讯精选 + 开源工具发现</p>',
         '  </header>',
         '  <div class="stats">',
-        f'    <div class="stat-item"><div class="number">{total_count}</div><div class="label">共筛选</div></div>',
-        f'    <div class="stat-item"><div class="number">{high_value_count}</div><div class="label">高价值</div></div>',
-        f'    <div class="stat-item"><div class="number">{len(rss_articles)}</div><div class="label">RSS资讯</div></div>',
-        f'    <div class="stat-item"><div class="number">{len(release_articles)}</div><div class="label">工具更新</div></div>',
+        f'    <div class="stat-item"><div class="number">{total_news}</div><div class="label">办公资讯</div></div>',
+        f'    <div class="stat-item"><div class="number">{total_repos}</div><div class="label">热门项目</div></div>',
+        f'    <div class="stat-item"><div class="number">{high_news}</div><div class="label">高价值资讯</div></div>',
+        f'    <div class="stat-item"><div class="number">{high_repos}</div><div class="label">高价值项目</div></div>',
         '  </div>',
     ]
 
-    if high:
-        html_parts.append('  <div class="section">')
-        html_parts.append('    <div class="section-title">🔥 高优先级（3-5分）</div>')
-        for art in high:
-            html_parts.append(render_high(art))
-        html_parts.append('  </div>')
+    # 办公资讯模块
+    html_parts.append('  <div class="module">')
+    html_parts.append('    <div class="module-header">')
+    html_parts.append('      <span class="module-icon">📰</span>')
+    html_parts.append('      <span class="module-title">办公资讯精选</span>')
+    html_parts.append(f'      <span class="module-subtitle">共 {total_news} 条，按办公价值排序</span>')
+    html_parts.append('    </div>')
+    if news_items:
+        for it in news_items:
+            html_parts.append(render_news_card(it))
+    else:
+        html_parts.append('    <div class="empty-tip">本周暂无符合条件的办公资讯</div>')
+    html_parts.append('  </div>')
 
-    if normal:
-        html_parts.append('  <div class="section">')
-        html_parts.append('    <div class="section-title normal">📌 值得关注（2分）</div>')
-        for art in normal:
-            html_parts.append(render_normal(art))
-        html_parts.append('  </div>')
+    # GitHub Trending 模块
+    html_parts.append('  <div class="module">')
+    html_parts.append('    <div class="module-header">')
+    html_parts.append('      <span class="module-icon">🔥</span>')
+    html_parts.append('      <span class="module-title">GitHub 本周热门项目</span>')
+    html_parts.append(f'      <span class="module-subtitle">共 {total_repos} 个，按办公实用价值排序</span>')
+    html_parts.append('    </div>')
+    if repo_items:
+        for it in repo_items:
+            html_parts.append(render_repo_card(it))
+    else:
+        html_parts.append('    <div class="empty-tip">本周暂无热门项目数据</div>')
+    html_parts.append('  </div>')
 
-    if release_articles:
-        html_parts.append('  <div class="section">')
-        html_parts.append('    <div class="section-title release">🛠 开源基础设施更新</div>')
-        for art in release_articles:
-            html_parts.append(render_release(art))
-        html_parts.append('  </div>')
-
-    if not rss_articles and not release_articles:
-        html_parts.append('  <div class="section" style="text-align:center;color:var(--text-secondary);padding:3rem 1rem;">今日无符合条件的资讯</div>')
-
-    sources_list = [
-        "量子位 RSS", "机器之心 RSS", "InfoQ AI前线 RSS",
-        "DeepSeek / 通义千问 / Kimi / 智谱AI GitHub Releases",
-        "LangChain / Ollama / vLLM / Dify GitHub Releases",
-        "FastGPT / RAGFlow / MaxKB / QAnything GitHub Releases",
-    ]
     html_parts.extend([
         '  <footer>',
         f'    <div>生成时间：{datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</div>',
-        f'    <div class="sources">信源：{" / ".join(sources_list)}</div>',
+        '    <div style="margin-top:0.5rem;">信源：量子位 / 机器之心 / InfoQ AI前线 / GitHub Trending</div>',
         '  </footer>',
         '</div>',
         '</body>',
@@ -587,30 +677,49 @@ def generate_html(rss_articles: List[Article], release_articles: List[Article]) 
     return path
 
 
-def generate_md(results: List[Article]) -> str:
+def generate_md(news_items: List[NewsItem], repo_items: List[RepoItem]) -> str:
     today = datetime.datetime.now().strftime("%Y-%m-%d")
-    high = [a for a in results if (a.score or 0) >= 3]
     lines = [
-        f"# AI日报 {today} — 高优先级归档",
+        f"# AI办公日报 {today}",
         "",
         f"> 生成时间：{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"> 共筛选 {len(results)} 条，高价值 {len(high)} 条",
+        f"> 办公资讯 {len(news_items)} 条 | 热门项目 {len(repo_items)} 个",
         "",
     ]
-    for art in high:
-        lines.append(f"## [{art.score}分] {art.title}")
-        lines.append(f"- **来源**：{art.source}")
-        lines.append(f"- **链接**：{art.url}")
-        lines.append(f"- **标签**：{', '.join(art.tags)}")
-        lines.append(f"- **总结**：{art.ai_summary}")
-        if art.action:
-            lines.append(f"- **落地建议**：{art.action}")
-        if art.talk:
-            lines.append(f"- **领导话术**：{art.talk}")
+
+    lines.append("## 📰 办公资讯精选")
+    lines.append("")
+    if news_items:
+        for it in news_items:
+            lines.append(f"### [{it.score}分] {it.title}")
+            lines.append(f"- **来源**：{it.source}")
+            lines.append(f"- **链接**：{it.url}")
+            lines.append(f"- **核心内容**：{it.core_summary}")
+            lines.append(f"- **办公建议**：{it.office_advice}")
+            if it.scenarios:
+                lines.append(f"- **落地场景**：{' / '.join(it.scenarios)}")
+            lines.append(f"- **发散思考**：{it.thinking}")
+            lines.append("")
+    else:
+        lines.append("本周暂无符合条件的办公资讯。")
         lines.append("")
-    if not high:
-        lines.append("今日无高优先级资讯。")
+
+    lines.append("## 🔥 GitHub 本周热门项目")
+    lines.append("")
+    if repo_items:
+        for it in repo_items:
+            lines.append(f"### [{it.score}分] {it.name}")
+            lines.append(f"- **链接**：{it.url}")
+            lines.append(f"- **星标**：{it.stars:,} | **语言**：{it.language}")
+            lines.append(f"- **核心功能**：{it.core_summary}")
+            lines.append(f"- **办公价值**：{it.office_value}")
+            lines.append(f"- **组合用法**：{it.combo_usage}")
+            lines.append(f"- **发散思考**：{it.thinking}")
+            lines.append("")
+    else:
+        lines.append("本周暂无热门项目数据。")
         lines.append("")
+
     os.makedirs("docs", exist_ok=True)
     path = f"docs/{today}.md"
     with open(path, "w", encoding="utf-8") as f:
@@ -638,7 +747,7 @@ def cleanup_old_md():
 
 def main():
     log("=" * 60)
-    log("AI日报自动采集与过滤 开始运行")
+    log("AI办公日报自动采集与过滤 开始运行")
     log("=" * 60)
     try:
         cfg = load_config()
@@ -652,78 +761,87 @@ def main():
 
     min_score = cfg.get("filter", {}).get("min_score", 2)
     max_articles = cfg.get("filter", {}).get("max_articles_per_day", 20)
-    gh_cfg = cfg.get("filter", {}).get("github_releases", {})
-    gh_max_per_source = gh_cfg.get("max_per_source", 2)
+    max_news_ai = cfg.get("filter", {}).get("max_news_ai", 12)
+    max_repo_ai = cfg.get("filter", {}).get("max_repo_ai", 10)
 
-    all_articles: List[Article] = []
+    # 1. 采集
+    all_news: List[NewsItem] = []
     for src in cfg.get("sources", {}).get("rss", []):
-        all_articles.extend(fetch_rss(src["url"], src["name"]))
-    for src in cfg.get("sources", {}).get("github_releases", []):
-        all_articles.extend(fetch_github_releases(src["url"], src["name"], gh_max_per_source))
+        all_news.extend(fetch_rss(src["url"], src["name"]))
 
-    log(f"[采集] 总计 {len(all_articles)} 篇")
+    all_repos: List[RepoItem] = fetch_github_trending()
 
-    rss_articles = [a for a in all_articles if a.source_type == "rss"]
-    release_articles = [a for a in all_articles if a.source_type == "github_release"]
-    log(f"[采集] RSS {len(rss_articles)} 篇, Release {len(release_articles)} 篇")
+    log(f"[采集] RSS {len(all_news)} 篇, Trending {len(all_repos)} 个")
 
-    filtered_rss = prefilter(rss_articles, cfg)
+    # 2. 预过滤 RSS
+    filtered_news = prefilter_news(all_news, cfg)
 
-    scored_releases: List[Article] = []
-    for art in release_articles:
-        auto_score_release(art)
-        scored_releases.append(art)
-        log(f"[Release自动评分] {art.title[:50]}... | score={art.score} | tags={art.tags}")
-
-    scored_rss: List[Article] = []
-    if filtered_rss:
-        ai_limit = 30
-        for idx, art in enumerate(filtered_rss[:ai_limit], 1):
-            log(f"[AI过滤] ({idx}/{min(len(filtered_rss), ai_limit)}) 分析: {art.title[:40]}...")
-            result = ai_filter(art, cfg)
+    # 3. AI 分析 RSS
+    analyzed_news: List[NewsItem] = []
+    if filtered_news:
+        for idx, it in enumerate(filtered_news[:max_news_ai], 1):
+            log(f"[AI资讯] ({idx}/{min(len(filtered_news), max_news_ai)}) 分析: {it.title[:40]}...")
+            result = ai_analyze_news(it, cfg)
             if result is None:
-                log(f"[AI过滤] 失败，跳过: {art.title[:40]}...")
+                log(f"[AI资讯] 失败，跳过: {it.title[:40]}...")
                 continue
-            log(f"[AI过滤] 评分: {result.score} | 标签: {result.tags}")
+            log(f"[AI资讯] 评分: {result.score}")
             if result.score >= min_score:
-                scored_rss.append(result)
+                analyzed_news.append(result)
             else:
-                log(f"[AI过滤] 丢弃（分数不足）: {art.title[:40]}...")
-        log(f"[AI过滤] 保留 >= {min_score} 分的RSS文章: {len(scored_rss)} 篇")
+                log(f"[AI资讯] 丢弃（分数不足）: {it.title[:40]}...")
+        log(f"[AI资讯] 保留 >= {min_score} 分: {len(analyzed_news)} 篇")
     else:
         log("[预过滤] 无匹配RSS文章")
 
-    seen_rss: set = set()
-    deduped_rss: List[Article] = []
-    for art in scored_rss:
-        if art.id not in seen_rss:
-            seen_rss.add(art.id)
-            deduped_rss.append(art)
-    if len(deduped_rss) < len(scored_rss):
-        log(f"[去重] RSS去除 {len(scored_rss) - len(deduped_rss)} 篇重复，剩余 {len(deduped_rss)} 篇")
+    # 4. AI 分析 Trending
+    analyzed_repos: List[RepoItem] = []
+    if all_repos:
+        for idx, it in enumerate(all_repos[:max_repo_ai], 1):
+            log(f"[AI项目] ({idx}/{min(len(all_repos), max_repo_ai)}) 分析: {it.name[:40]}...")
+            result = ai_analyze_repo(it, cfg)
+            if result is None:
+                log(f"[AI项目] 失败，跳过: {it.name[:40]}...")
+                continue
+            log(f"[AI项目] 评分: {result.score}")
+            if result.score >= min_score:
+                analyzed_repos.append(result)
+            else:
+                log(f"[AI项目] 丢弃（分数不足）: {it.name[:40]}...")
+        log(f"[AI项目] 保留 >= {min_score} 分: {len(analyzed_repos)} 个")
+    else:
+        log("[GitHub] 无Trending数据")
 
-    seen_rel: set = set()
-    deduped_releases: List[Article] = []
-    for art in scored_releases:
-        if art.id not in seen_rel:
-            seen_rel.add(art.id)
-            deduped_releases.append(art)
-    if len(deduped_releases) < len(scored_releases):
-        log(f"[去重] Release去除 {len(scored_releases) - len(deduped_releases)} 篇重复，剩余 {len(deduped_releases)} 篇")
+    # 5. 分别按办公价值降序排序
+    analyzed_news.sort(key=lambda x: x.score or 0, reverse=True)
+    analyzed_repos.sort(key=lambda x: x.score or 0, reverse=True)
 
-    final = deduped_releases + deduped_rss
-    final = final[:max_articles]
+    # 6. 去重
+    seen_news: set = set()
+    deduped_news: List[NewsItem] = []
+    for it in analyzed_news:
+        if it.id not in seen_news:
+            seen_news.add(it.id)
+            deduped_news.append(it)
 
-    final_releases = [a for a in final if a.source_type == "github_release"]
-    final_rss = [a for a in final if a.source_type == "rss"]
+    seen_repos: set = set()
+    deduped_repos: List[RepoItem] = []
+    for it in analyzed_repos:
+        if it.id not in seen_repos:
+            seen_repos.add(it.id)
+            deduped_repos.append(it)
 
-    log(f"[截断] 最终输出 RSS {len(final_rss)} 篇, Release {len(final_releases)} 篇（上限 {max_articles}）")
+    # 7. 截断（各自有上限，互不占用）
+    final_news = deduped_news[:max_articles]
+    final_repos = deduped_repos[:max_articles]
 
-    generate_html(final_rss, final_releases)
-    generate_md(final)
+    log(f"[截断] 最终输出 资讯 {len(final_news)} 篇, 项目 {len(final_repos)} 个")
+
+    generate_html(final_news, final_repos)
+    generate_md(final_news, final_repos)
     cleanup_old_md()
     log("=" * 60)
-    log("AI日报自动采集与过滤 运行完成")
+    log("AI办公日报自动采集与过滤 运行完成")
     log("=" * 60)
 
 
